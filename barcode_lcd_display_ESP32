@@ -1,0 +1,163 @@
+#include <LiquidCrystal_I2C.h>
+#include <usbhid.h>
+#include <hiduniversal.h>
+#include <Usb.h>
+#include <usbhub.h>
+#include <hidboot.h>
+
+// LCD setup
+int lcdColumns = 16;
+int lcdRows = 2;
+LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows); // Adjust the I2C address if necessary
+
+// USB setup
+USB Usb;
+USBHub Hub(&Usb);
+HIDUniversal Hid(&Usb);
+String data = ""; // Stores scanned barcode data
+
+// Touch pin definitions
+const int upTouchPin = T7;   // Touch pin for moving up (GPIO27)
+const int downTouchPin = T6; // Touch pin for moving down (GPIO14)
+const int okTouchPin = T5;   // Touch pin for confirming selection (GPIO12)
+const int backTouchPin = T4; // Touch pin for back (GPIO13)
+
+// Variables
+int currentMenu = 0;          // Current menu option (0-1 for 2 options)
+bool inAction = false;        // Tracks if in an action screen
+const int threshold = 40;     // Threshold for touch detection (adjust as needed)
+
+// Barcode parser class
+class KbdRptParser : public KeyboardReportParser {
+    void PrintKey(uint8_t mod, uint8_t key);
+  protected:
+    virtual void OnKeyDown(uint8_t mod, uint8_t key);
+    virtual void OnKeyPressed(uint8_t key);
+};
+
+void KbdRptParser::OnKeyDown(uint8_t mod, uint8_t key) {
+    uint8_t c = OemToAscii(mod, key);
+    if (c) {
+        OnKeyPressed(c);
+    }
+}
+
+void KbdRptParser::OnKeyPressed(uint8_t key) {
+    if (key == '\r' || key == '\n') { // End of barcode input
+        Serial.println("Scanned Data: " + data);
+
+        // Reset data for the next scan
+        data = "";
+    } else if (isPrintable(key)) { // Check if the key is printable
+        data += (char)key; // Append the character to the data string
+        Serial.print((char)key); // Print each character to Serial Monitor
+
+        // Show the last 3 digits on the LCD
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Last 3 Digits:");
+        String lastThree = data.length() >= 3 ? data.substring(data.length() - 3) : data;
+        lcd.setCursor(0, 1);
+        lcd.print(lastThree);
+    }
+}
+
+KbdRptParser Prs;
+
+void setup() {
+    // Initialize Serial Monitor
+    Serial.begin(115200);
+    Serial.println("Starting...");
+
+    // Initialize LCD
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Menu Control");
+    delay(2000);
+    lcd.clear();
+
+    // Initialize USB
+    if (Usb.Init() == -1) {
+        Serial.println("OSC did not start.");
+        while (1); // Halt if USB fails
+    }
+    Hid.SetReportParser(1, (HIDReportParser*)&Prs);
+
+    // Display the first menu
+    displayMenu();
+}
+
+void loop() {
+    if (!inAction) {
+        if (touchRead(upTouchPin) < threshold) {
+            currentMenu = (currentMenu == 0) ? 1 : currentMenu - 1; // Toggle between 0 and 1
+            displayMenu();
+            delay(300); // Debounce delay
+        } else if (touchRead(downTouchPin) < threshold) {
+            currentMenu = (currentMenu + 1) % 2; // Toggle between 0 and 1
+            displayMenu();
+            delay(300); // Debounce delay
+        } else if (touchRead(okTouchPin) < threshold) {
+            inAction = true;
+            executeMenu(currentMenu);
+            delay(300); // Debounce delay
+        }
+    }
+    Usb.Task(); // Handle USB tasks
+}
+
+void displayMenu() {
+    lcd.clear();
+    if (currentMenu == 0) {
+        lcd.setCursor(0, 0);
+        lcd.print("> Option 1"); // Highlight Option 1
+        lcd.setCursor(0, 1);
+        lcd.print("  Option 2");
+    } else if (currentMenu == 1) {
+        lcd.setCursor(0, 0);
+        lcd.print("  Option 1");
+        lcd.setCursor(0, 1);
+        lcd.print("> Option 2"); // Highlight Option 2
+    }
+    Serial.println("Current Menu: Option " + String(currentMenu + 1));
+}
+
+void executeMenu(int menuIndex) {
+    lcd.clear();
+    if (menuIndex == 0) { // Option 1: For Loop
+        lcd.setCursor(0, 0);
+        lcd.print("Running Loop...");
+        Serial.println("Running Loop...");
+        for (int i = 1; i <= 20; i++) {
+            if (touchRead(backTouchPin) < threshold) { // Check for back button press
+                Serial.println("Back button pressed. Exiting loop...");
+                break;
+            }
+            lcd.setCursor(0, 1);
+            lcd.print("Value: ");
+            lcd.print(i);
+            Serial.println(i);
+            delay(500);
+        }
+    } else if (menuIndex == 1) { // Option 2: Barcode Scanning
+        lcd.setCursor(0, 0);
+        lcd.print("Waiting for");
+        lcd.setCursor(0, 1);
+        lcd.print("barcode...");
+        Serial.println("Option 2: Waiting for barcode...");
+        while (true) {
+            Usb.Task(); // Handle USB tasks
+            if (touchRead(backTouchPin) < threshold) { // Exit back to menu
+                Serial.println("Back button pressed. Returning to menu...");
+                lcd.clear();
+                lcd.setCursor(0, 0);
+                lcd.print("Returning...");
+                delay(2000);
+                break;
+            }
+        }
+    }
+    inAction = false; // Return to the menu
+    displayMenu();
+}
